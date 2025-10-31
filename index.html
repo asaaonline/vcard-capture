@@ -144,7 +144,17 @@
         currentStream = null;
     }
 }
+
+async function stopAllStreams() {
+    if (currentStream) {
+        currentStream.getTracks().forEach(track => {
+            try { track.stop(); } catch (_) {}
+        });
+        currentStream = null;
+    }
+}
     async function startCardDetection() {
+        await stopAllStreams();
         const canvas = document.getElementById('canvasVideo');
         const ctx = canvas.getContext('2d');
         const captureButton = document.getElementById('captureButton');
@@ -158,6 +168,8 @@
             // Stop all tracks from the previous stream
             currentStream.getTracks().forEach(track => track.stop());
         }
+        await new Promise(r => setTimeout(r, 300));
+
 
         // Request higher resolution and hint to disable autofocus where supported
         currentStream = await navigator.mediaDevices.getUserMedia({
@@ -173,7 +185,8 @@
             }
         });
 
-
+const oldVideo = document.querySelector('video');
+if (oldVideo) oldVideo.remove();
 
         video = document.createElement('video');
 
