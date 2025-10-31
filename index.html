@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge Detection and Cropping</title>
+    <!-- Include Font Awesome for icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+
+    <style>
+        /* Reset and Layout */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background-color: #000;
+        }
+
+        /* Center Canvas */
+        #canvasContainer {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            max-height: 480px;
+            aspect-ratio: 4 / 3;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .result_canva {
+            object-fit: contain;
+        }
+
+        /* Fixed Buttons at Bottom Center */
+        .button-container {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 10010;
+        }
+
+        button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: #fff;
+            border: none;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            z-index: 10000;
+        }
+
+        button:hover {
+            background-color: #ddd;
+        }
+        #konvaContainer {
+            z-index: 10000;
+        }
+
+        button i {
+            font-size: 20px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+
+<!-- <canvas id="canvasOutput" width="640" height="480"></canvas> -->
+
+<!-- Button container at the bottom of the screen -->
+<canvas id="canvasVideo" width="640" height="480" style="position: absolute; top: 0; left: 0; z-index: 1;"></canvas>
+
+<div class="button-container">
+    <button id="captureButton">
+        <i class="fa fa-camera"></i> <!-- Capture icon -->
+    </button>
+    <button id="switchButton">
+        <i class="fa fa-sync-alt"></i> <!-- Switch camera icon -->
+    </button>
+    <button id="cropButton" style="display: none;">
+        <i class="fa fa-crop"></i> <!-- Crop icon -->
+    </button>
+    <button id="retakeButton" style="display: none;">
+        <i class="fa fa-redo"></i> <!-- Retake icon -->
+    </button>
+</div>
+
+<div id="konvaContainer"></div>
+<canvas id="resultCanvas" class="result_canva"></canvas>
+
+<!-- Include OpenCV.js -->
+<!-- Include Konva.js -->
+<script src="https://cdn.jsdelivr.net/npm/konva@8.3.12/konva.min.js"></script>
+<script>
+    let detectedPoints = [];
+    const DEBUG = false;
+    let video;
+    let currentStream = null;
+    let currentFacingMode = "environment";
+    let shouldProcess = true;
+    // async function onOpenCvReady() {
+    //     if (DEBUG) console.log('OpenCV.js is ready.');
+    //     if (currentStream) {
+    //         // Stop all tracks from the previous stream
+    //         currentStream.getTracks().forEach(track => track.stop());
+    //     }
+    // }
+    startCardDetection();
+
+    async function resetCameraFocus() {
+    if (currentStream) {
+        const track = currentStream.getVideoTracks()[0];
+        const capabilities = track.getCapabilities();
+
+        if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
+            try {
+                await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+                console.log("Focus reset to continuous");
+            } catch (err) {
+                console.warn("Unable to reset focus:", err);
+            }
+        }
+
+        track.stop();
+        currentStream = null;
+    }
+}
+    async function startCardDetection() {
+        const canvas = document.getElementById('canvasVideo');
+        const ctx = canvas.getContext('2d');
+        const captureButton = document.getElementById('captureButton');
+        const retakeButton = document.getElementById('retakeButton');
+        const switchButton = document.getElementById('switchButton');
+        const konvaContainer = document.getElementById('konvaContainer');
+        const cropButton = document.getElementById('cropButton');
+        const resultCanvas = document.getElementById('resultCanvas');
+        // onOpenCvReady();
+        if (currentStream) {
+            // Stop all tracks from the previous stream
+            currentStream.getTracks().forEach(track => track.stop());
+        }
+
+        // Request higher resolution and hint to disable autofocus where supported
+        currentStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: { ideal: currentFacingMode },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 30 },
+                advanced: [
+                    { focusMode: "manual" },
+                    { focusMode: "single-shot" }
+                ]
+            }
+        });
+
+
+
+        video = document.createElement('video');
+
+        // Set attributes for iOS devices
+        video.setAttribute('playsinline', true);
+        video.setAttribute('muted', true);
+        video.setAttribute('autoplay', true);
+        video.style.display = 'none';
+
+        // Append the video element to the DOM
+        document.body.appendChild(video);
+
+        video.srcObject = currentStream;
+        video.play();
+
+        // Try to lock/disable autofocus and tune camera if supported
+        try {
+            const track = currentStream.getVideoTracks()[0];
+            const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+            const settings = track.getSettings ? track.getSettings() : {};
+
+            const constraints = { advanced: [] };
+
+            // Prefer manual focus if available
+            if (capabilities.focusMode && Array.isArray(capabilities.focusMode)) {
+                if (capabilities.focusMode.includes('manual')) {
+                    // Choose a reasonable focus distance midpoint for documents
+                    let focusDistance;
+                    if (capabilities.focusDistance && typeof capabilities.focusDistance.min === 'number' && typeof capabilities.focusDistance.max === 'number') {
+                        // Midpoint between min and max
+                        focusDistance = (capabilities.focusDistance.min + capabilities.focusDistance.max) / 2;
+                    }
+                    constraints.advanced.push({ focusMode: 'manual' });
+                    if (typeof focusDistance === 'number') {
+                        constraints.advanced.push({ focusDistance });
+                    }
+                } else if (capabilities.focusMode.includes('single-shot')) {
+                    // Single-shot tends to lock after focusing once
+                    constraints.advanced.push({ focusMode: 'single-shot' });
+                } else if (capabilities.focusMode.includes('continuous')) {
+                    // As a last resort, keep continuous but try to reduce hunting by setting a point of interest if available later
+                    constraints.advanced.push({ focusMode: 'continuous' });
+                }
+            }
+
+            // Stabilize exposure/white balance if supported
+            if (capabilities.exposureMode && Array.isArray(capabilities.exposureMode)) {
+                if (capabilities.exposureMode.includes('continuous')) {
+                    constraints.advanced.push({ exposureMode: 'continuous' });
+                }
+                if (capabilities.exposureMode.includes('manual')) {
+                    constraints.advanced.push({ exposureMode: 'manual' });
+                }
+            }
+            if (capabilities.whiteBalanceMode && Array.isArray(capabilities.whiteBalanceMode)) {
+                if (capabilities.whiteBalanceMode.includes('continuous')) {
+                    constraints.advanced.push({ whiteBalanceMode: 'continuous' });
+                }
+                if (capabilities.whiteBalanceMode.includes('manual')) {
+                    constraints.advanced.push({ whiteBalanceMode: 'manual' });
+                }
+            }
+
+            // Max out resolution if camera supports larger than initially requested
+            if (capabilities.width && capabilities.height) {
+                const maxWidth = capabilities.width.max || 1920;
+                const maxHeight = capabilities.height.max || 1080;
+                constraints.advanced.push({ width: maxWidth, height: maxHeight });
+            }
+
+            if (constraints.advanced.length > 0 && track.applyConstraints) {
+                await track.applyConstraints(constraints);
+            }
+
+            // Optional: Try ImageCapture for finer focus control when supported
+            if (window.ImageCapture) {
+                try {
+                    const imageCapture = new ImageCapture(track);
+                    const photoCapabilities = await imageCapture.getPhotoCapabilities();
+                    const photoSettings = {};
+                    if (photoCapabilities.focusMode && photoCapabilities.focusMode.includes('manual')) {
+                        photoSettings.focusMode = 'manual';
+                        if (photoCapabilities.focusDistance) {
+                            const mid = (photoCapabilities.focusDistance.min + photoCapabilities.focusDistance.max) / 2;
+                            photoSettings.focusDistance = mid;
+                        }
+                    } else if (photoCapabilities.focusMode && photoCapabilities.focusMode.includes('single-shot')) {
+                        photoSettings.focusMode = 'single-shot';
+                    }
+                    if (Object.keys(photoSettings).length) {
+                        await imageCapture.setOptions(photoSettings);
+                    }
+                } catch (_) {
+                    // Ignore ImageCapture errors silently
+                }
+            }
+        } catch (e) {
+            console.warn('Camera tuning not supported on this device/browser:', e);
+        }
+
+
+        video.addEventListener('loadeddata', function () {
+            const FPS = 60;
+            const videoWidth = video.videoWidth;
+            const videoHeight = video.videoHeight;
+            if (DEBUG) console.log("width",videoWidth)
+            canvas.width = videoWidth;
+            canvas.height = videoHeight;
+            resultCanvas.width=videoWidth;
+            resultCanvas.height=videoHeight;
+
+            if (DEBUG) console.log("this is doing");
+            
+            function processVideo() {
+                if (DEBUG) console.log("inside process video",shouldProcess)
+                if (!shouldProcess) {
+                    return; // Stop processing if flag is set to false
+                }
+                if (video.readyState >= 2) { // Check if video is ready
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    if (DEBUG) console.log("p1")
+                }
+
+                setTimeout(processVideo, 1000/FPS);
+            }
+
+            processVideo();
+        });
+
+        captureButton.onclick = function () {
+            if (video && video.readyState >= 2) { // Check if video is ready
+                // Pause the video
+                // shouldProcess = false; // Stop processing
+
+                video.pause();
+                // if (currentStream) {
+                //         currentStream.getTracks().forEach(track => track.stop());
+                //         currentStream = null;
+                //     }
+
+
+                console.log("end of camera log")
+
+                // Capture the pure video frame
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = video.videoWidth;
+                tempCanvas.height = video.videoHeight;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+                const srcImageDataUrl = tempCanvas.toDataURL('image/png');
+
+                // Hide the canvasOutput and captureButton
+                document.getElementById('canvasVideo').style.display = 'none';
+                captureButton.style.display = 'none';
+                switchButton.style.display= 'none';
+                // Show the Konva container and crop button
+                konvaContainer.style.display = 'block';
+                cropButton.style.display = 'block';
+                retakeButton.style.display = 'block';
+
+                // Initialize Konva with the captured image and detected points
+                initializeKonva(srcImageDataUrl);
+            } else {
+                console.error("Video is not ready for capturing");
+            }
+        };
+
+        function initializeKonva(srcImageDataUrl) {
+            // Create the stage
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            const stage = new Konva.Stage({
+                container: 'konvaContainer',
+                width: width,
+                height: height,
+            });
+
+            const layer = new Konva.Layer();
+            stage.add(layer);
+
+            // Load the image
+            const imageObj = new Image();
+            imageObj.onload = function () {
+                const imgWidth = imageObj.width;
+                const imgHeight = imageObj.height;
+
+                // Scale the image to fit the stage
+                const scale = Math.min(width / imgWidth, height / imgHeight);
+                const scaledWidth = imgWidth * scale;
+                const scaledHeight = imgHeight * scale;
+                const x = (width - scaledWidth) / 2;
+                const y = (height - scaledHeight) / 2;
+
+                // Create Konva image
+                const konvaImage = new Konva.Image({
+                    x: x,
+                    y: y,
+                    image: imageObj,
+                    width: scaledWidth,
+                    height: scaledHeight,
+                });
+                layer.add(konvaImage);
+
+                // Adjust the detected points to the scaled image
+                const points = {};
+                if (detectedPoints.length === 4) {
+                    for (let i = 0; i < 4; i++) {
+                        const key = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'][i];
+                        const point = detectedPoints[i];
+                        points[key] = new Konva.Circle({
+                            x: x + (point.x * scale),
+                            y: y + (point.y * scale),
+                            radius: 15,
+                            fill: 'red',
+                            draggable: true,
+                            dragBoundFunc: function (pos) {
+                                // Keep the points within the image bounds
+                                return {
+                                    x: Math.max(x, Math.min(x + scaledWidth, pos.x)),
+                                    y: Math.max(y, Math.min(y + scaledHeight, pos.y)),
+                                };
+                            },
+                        });
+                        // points[key].on('dragmove', updatePolygon);
+                        // layer.add(points[key]);
+                    }
+                } else {
+                    // Default points if no detected points
+                    points['topLeft'] = new Konva.Circle({
+                        x: x+50,
+                        y: y+50,
+                        radius: 20,
+                        fill: 'red',
+                        draggable: true,
+                    });
+                    points['topRight'] = new Konva.Circle({
+                        x: x + scaledWidth-50,
+                        y: y+50,
+                        radius: 20,
+                        fill: 'red',
+                        draggable: true,
+                    });
+                    points['bottomRight'] = new Konva.Circle({
+                        x: x + scaledWidth-50,
+                        y: y + scaledHeight-50,
+                        radius: 20,
+                        fill: 'red',
+                        draggable: true,
+                    });
+                    points['bottomLeft'] = new Konva.Circle({
+                        x: x+50,
+                        y: y + scaledHeight-50,
+                        radius: 20,
+                        fill: 'red',
+                        draggable: true,
+                    });
+
+                }
+
+                // Draw the polygon connecting the points
+                const polygon = new Konva.Line({
+                    points: getPolygonPoints(points),
+                    fill: 'rgba(0, 0, 255, 0.3)',
+                    stroke: 'blue',
+                    strokeWidth: 2,
+                    closed: true,
+                });
+                layer.add(polygon);
+                for (let key in points) {
+                        points[key].on('dragmove', updatePolygon);
+                        layer.add(points[key]);
+                    }
+                layer.draw();
+
+                function updatePolygon() {
+                    polygon.points(getPolygonPoints(points));
+                    layer.batchDraw();
+                }
+
+                function getPolygonPoints(points) {
+                    return [
+                        points.topLeft.x(), points.topLeft.y(),
+                        points.topRight.x(), points.topRight.y(),
+                        points.bottomRight.x(), points.bottomRight.y(),
+                        points.bottomLeft.x(), points.bottomLeft.y(),
+                    ];
+                }
+
+                cropButton.onclick = function () {
+                    cropImage(konvaImage, points, scale, x, y);
+                    sendCroppedImage();
+                };
+            };
+            imageObj.crossOrigin = 'Anonymous'; // Handle cross-origin issues if any
+            imageObj.src = srcImageDataUrl;
+        }
+
+        function cropImage(image, points, scale, x, y) {
+    // Normalize points to the original image size
+    const srcPoints = [
+        (points.topLeft.x() - x) / scale, (points.topLeft.y() - y) / scale,
+        (points.topRight.x() - x) / scale, (points.topRight.y() - y) / scale,
+        (points.bottomRight.x() - x) / scale, (points.bottomRight.y() - y) / scale,
+        (points.bottomLeft.x() - x) / scale, (points.bottomLeft.y() - y) / scale,
+    ];
+
+    // Ensure the points are in the correct order (top-left, top-right, bottom-right, bottom-left)
+    const orderedPoints = orderPoints(srcPoints);
+
+    // Calculate the width and height of the destination image
+    const widthTop = distancePoints(
+        orderedPoints[0][0], orderedPoints[0][1],
+        orderedPoints[1][0], orderedPoints[1][1]
+    );
+    const widthBottom = distancePoints(
+        orderedPoints[3][0], orderedPoints[3][1],
+        orderedPoints[2][0], orderedPoints[2][1]
+    );
+    const maxWidth = Math.max(widthTop, widthBottom);
+
+    const heightLeft = distancePoints(
+        orderedPoints[0][0], orderedPoints[0][1],
+        orderedPoints[3][0], orderedPoints[3][1]
+    );
+    const heightRight = distancePoints(
+        orderedPoints[1][0], orderedPoints[1][1],
+        orderedPoints[2][0], orderedPoints[2][1]
+    );
+    const maxHeight = Math.max(heightLeft, heightRight);
+
+    // Destination points for the card-like transformation
+    const dstPoints = [
+        0, 0,                  // Top-left
+        maxWidth, 0,           // Top-right
+        maxWidth, maxHeight,   // Bottom-right
+        0, maxHeight           // Bottom-left
+    ];
+
+    // Create a temporary canvas to draw the image
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = image.image().width;
+    tempCanvas.height = image.image().height;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(image.image(), 0, 0, tempCanvas.width, tempCanvas.height);
+
+    // Load the image into an OpenCV matrix
+    let srcMat = cv.imread(tempCanvas);
+    let dstMat = new cv.Mat();
+
+    // Map source points to destination points
+    let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, orderedPoints.flat());
+    let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, dstPoints);
+
+    // Perform the perspective transformation
+    let M = cv.getPerspectiveTransform(srcTri, dstTri);
+
+    let dsize = new cv.Size(maxWidth, maxHeight);
+    cv.warpPerspective(srcMat, dstMat, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+    // Display the result on resultCanvas
+    cv.imshow('resultCanvas', dstMat);
+
+    // Show the result canvas and hide Konva container
+    konvaContainer.style.display = 'none';
+    cropButton.style.display = 'none';
+    resultCanvas.style.display = 'block';
+
+    // Clean up resources
+    srcMat.delete();
+    dstMat.delete();
+    srcTri.delete();
+    dstTri.delete();
+    M.delete();
+}
+
+// Helper to order points correctly (top-left, top-right, bottom-right, bottom-left)
+function orderPoints(points) {
+    const rect = [[], [], [], []];
+
+    const sortedByY = [
+        [points[0], points[1]],
+        [points[2], points[3]],
+        [points[4], points[5]],
+        [points[6], points[7]],
+    ].sort((a, b) => a[1] - b[1]); // Sort by Y-coordinate
+
+    const topPoints = sortedByY.slice(0, 2).sort((a, b) => a[0] - b[0]); // Top-left, top-right
+    const bottomPoints = sortedByY.slice(2, 4).sort((a, b) => a[0] - b[0]); // Bottom-left, bottom-right
+
+    rect[0] = topPoints[0]; // Top-left
+    rect[1] = topPoints[1]; // Top-right
+    rect[2] = bottomPoints[1]; // Bottom-right
+    rect[3] = bottomPoints[0]; // Bottom-left
+
+    return rect;
+}
+
+// Helper to calculate the distance between two points
+function distancePoints(x1, y1, x2, y2) {
+    return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+}
+
+
+
+        // function distancePoints(x1, y1, x2, y2) {
+        //     return Math.hypot(x2 - x1, y2 - y1);
+        // }
+    }
+
+    // startCardDetection();
+function sendCroppedImage() {
+    const resultCanvas = document.getElementById('resultCanvas');
+    const croppedImageDataUrl = resultCanvas.toDataURL('image/png'); // Convert canvas to Base64 image
+    const messageData = JSON.stringify({ pureImageDataUrl: croppedImageDataUrl, action: "close" });
+    window.parent.postMessage(messageData, '*'); // Send the image and close action to the parent
+}
+
+document.getElementById('retakeButton').onclick = function () {
+    // Reset the display
+    document.getElementById('canvasVideo').style.display = 'block';
+    captureButton.style.display = 'block';
+    switchButton.style.display = 'block';
+    document.getElementById('retakeButton').style.display = 'none';
+    konvaContainer.style.display = 'none';
+    cropButton.style.display = 'none';
+    resultCanvas.style.display = 'none';
+
+    // Resume the video
+    video.play();
+};
+
+document.getElementById('switchButton').addEventListener('click', () => {
+        currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+        startCardDetection();
+    });
+
+window.addEventListener("beforeunload", resetCameraFocus);
+
+</script>
+</body>
+</html>
