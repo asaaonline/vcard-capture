@@ -125,6 +125,14 @@
     //     }
     // }
     startCardDetection();
+	document.addEventListener('keydown', (event) => {
+    if (event.code === 'Space') {
+        event.preventDefault(); // prevent scrolling
+        if (captureButton.style.display !== 'none') {
+            captureButton.click(); // trigger capture when visible
+        }
+    }
+});
 
     async function resetCameraFocus() {
     if (currentStream) {
